@@ -64,6 +64,7 @@ jobs:
             -DSD_BUILD_SHARED_GGML_LIB=ON ^
             -DBUILD_SHARED_LIBS=ON ^
             -DGGML_BACKEND_DL=ON ^
+            -DGGML_NATIVE=OFF ^
             -DGGML_CPU_ALL_VARIANTS=OFF ^
             -DSD_BUILD_EXAMPLES=OFF ^
             -DSD_SERVER_BUILD_FRONTEND=OFF ^
@@ -81,6 +82,7 @@ jobs:
             -DSD_BUILD_SHARED_GGML_LIB=ON ^
             -DBUILD_SHARED_LIBS=ON ^
             -DGGML_BACKEND_DL=ON ^
+            -DGGML_NATIVE=OFF ^
             -DGGML_CPU_ALL_VARIANTS=OFF ^
             -DSD_BUILD_EXAMPLES=OFF ^
             -DSD_SERVER_BUILD_FRONTEND=OFF ^
