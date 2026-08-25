@@ -14,7 +14,7 @@ on:
 jobs:
   build-windows:
     name: Windows x86_64 (Vulkan + CUDA)
-    runs-on: windows-latest
+    runs-on: windows-2022
     env:
       CUDAFLAGS: "--allow-unsupported-compiler"
       NVCC_APPEND_FLAGS: "--allow-unsupported-compiler"
@@ -90,6 +90,8 @@ jobs:
         run: |
           cmake -B build-vulkan -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_FLAGS="/bigobj /EHsc" ^
+            -DCMAKE_C_FLAGS="/bigobj /EHsc" ^
             -DSD_BUILD_SHARED_LIBS=ON ^
             -DSD_BUILD_SHARED_GGML_LIB=ON ^
             -DBUILD_SHARED_LIBS=ON ^
@@ -110,6 +112,8 @@ jobs:
         run: |
           cmake -B build-cuda -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_FLAGS="/bigobj /EHsc" ^
+            -DCMAKE_C_FLAGS="/bigobj /EHsc" ^
             -DSD_BUILD_SHARED_LIBS=ON ^
             -DSD_BUILD_SHARED_GGML_LIB=ON ^
             -DBUILD_SHARED_LIBS=ON ^
