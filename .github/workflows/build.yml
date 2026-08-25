@@ -48,17 +48,40 @@ jobs:
           7z x $installer -oC:\VulkanSDK -y -bso0 -bsp0
           if (Test-Path $installer) { Remove-Item -Force $installer }
           
-          # 自动定位包含 glslc.exe 的根目录
-          $sdkRoot = "C:\VulkanSDK"
-          $foundBin = Get-ChildItem -Path "C:\VulkanSDK" -Recurse -Filter "glslc.exe" | Select-Object -First 1
-          if ($foundBin) {
-            $sdkRoot = $foundBin.Directory.Parent.FullName
+          # 精准定位 Include、Lib、Bin
+          $vulkanHeader = Get-ChildItem -Path "C:\VulkanSDK" -Recurse -Filter "vulkan.h" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $vulkanLib = Get-ChildItem -Path "C:\VulkanSDK" -Recurse -Filter "vulkan-1.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $glslcBin = Get-ChildItem -Path "C:\VulkanSDK" -Recurse -Filter "glslc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          
+          if ($vulkanHeader) {
+            $incDir = $vulkanHeader.Directory.Parent.FullName
+            $sdkRoot = (Get-Item $incDir).Parent.FullName
+            echo "Vulkan_INCLUDE_DIR=$incDir" >> $env:GITHUB_ENV
+            echo "Vulkan_INCLUDE_DIRS=$incDir" >> $env:GITHUB_ENV
+          } else {
+            $sdkRoot = "C:\VulkanSDK"
           }
           
-          Write-Host "Vulkan SDK ready at: $sdkRoot"
+          if ($vulkanLib) {
+            $libPath = $vulkanLib.FullName
+            echo "Vulkan_LIBRARY=$libPath" >> $env:GITHUB_ENV
+            echo "Vulkan_LIBRARIES=$libPath" >> $env:GITHUB_ENV
+          }
+          
+          if ($glslcBin) {
+            $glslcPath = $glslcBin.FullName
+            $binDir = $glslcBin.Directory.FullName
+            echo "Vulkan_GLSLC_EXECUTABLE=$glslcPath" >> $env:GITHUB_ENV
+            echo "$binDir" >> $env:GITHUB_PATH
+          }
+          
+          Write-Host "Vulkan SDK Root: $sdkRoot"
+          Write-Host "Vulkan Header: $($vulkanHeader.FullName)"
+          Write-Host "Vulkan Lib: $($vulkanLib.FullName)"
+          Write-Host "Vulkan Glslc: $($glslcBin.FullName)"
+          
           echo "VULKAN_SDK=$sdkRoot" >> $env:GITHUB_ENV
-          echo "$sdkRoot\Bin" >> $env:GITHUB_PATH
-          echo "$sdkRoot\bin" >> $env:GITHUB_PATH
+          echo "CMAKE_PREFIX_PATH=$sdkRoot" >> $env:GITHUB_ENV
 
       - name: Setup CUDA Toolkit
         uses: Jimver/cuda-toolkit@v0.2.21
@@ -106,7 +129,12 @@ jobs:
             -DSD_SERVER_BUILD_FRONTEND=OFF ^
             -DSD_WEBP=OFF ^
             -DSD_WEBM=OFF ^
-            -DSD_VULKAN=ON
+            -DSD_VULKAN=ON ^
+            -DVULKAN_SDK="%VULKAN_SDK%" ^
+            -DCMAKE_PREFIX_PATH="%CMAKE_PREFIX_PATH%" ^
+            -DVulkan_INCLUDE_DIR="%Vulkan_INCLUDE_DIR%" ^
+            -DVulkan_LIBRARY="%Vulkan_LIBRARY%" ^
+            -DVulkan_GLSLC_EXECUTABLE="%Vulkan_GLSLC_EXECUTABLE%"
           cmake --build build-vulkan --config Release -j 4
 
       - name: Build CUDA Binaries
