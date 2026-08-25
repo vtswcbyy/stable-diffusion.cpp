@@ -44,33 +44,40 @@ jobs:
           curl.exe -sSL -f -o $installer $url
           
           Write-Host "Extracting Vulkan SDK and nested packages via 7z..."
-          New-Item -ItemType Directory -Force -Path "C:\VulkanSDK_raw" | Out-Null
+          New-Item -ItemType Directory -Force -Path "C:\VulkanSDK_raw", "C:\VulkanSDK" | Out-Null
           7z x $installer -oC:\VulkanSDK_raw -y -bso0 -bsp0
           if (Test-Path $installer) { Remove-Item -Force $installer }
           
-          # 解压所有嵌套的 .7z / .zip 归档 (LunarG 安装包内部组件打包形式)
+          # 解压所有嵌套的 .7z / .zip 归档 (LunarG 核心与组件包)
           Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Include *.7z, *.zip | ForEach-Object {
             7z x $_.FullName -o"$($_.Directory.FullName)" -y -bso0 -bsp0
           }
           
-          # 组装标准 Vulkan SDK 目录结构 (Include, Lib, Bin)
-          New-Item -ItemType Directory -Force -Path "C:\VulkanSDK\Include", "C:\VulkanSDK\Lib", "C:\VulkanSDK\Bin" | Out-Null
-          
+          # 组装完整 Vulkan SDK 结构 (Include, Lib, Bin, share/cmake 等)
           $vulkanHeader = Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Filter "vulkan.h" -ErrorAction SilentlyContinue | Select-Object -First 1
           $vulkanLib = Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Filter "vulkan-1.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
           $glslcBin = Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Filter "glslc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $spirvHeaderCmake = Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Filter "*SPIRV-Headers*Config.cmake" -ErrorAction SilentlyContinue | Select-Object -First 1
           
           if ($vulkanHeader) {
-            $srcInc = $vulkanHeader.Directory.Parent.FullName
-            Copy-Item -Recurse -Force "$srcInc\*" "C:\VulkanSDK\Include\"
+            New-Item -ItemType Directory -Force -Path "C:\VulkanSDK\Include" | Out-Null
+            Copy-Item -Recurse -Force "$($vulkanHeader.Directory.Parent.FullName)\*" "C:\VulkanSDK\Include\" -ErrorAction SilentlyContinue
           }
           if ($vulkanLib) {
-            $srcLib = $vulkanLib.Directory.FullName
-            Copy-Item -Recurse -Force "$srcLib\*" "C:\VulkanSDK\Lib\"
+            New-Item -ItemType Directory -Force -Path "C:\VulkanSDK\Lib" | Out-Null
+            Copy-Item -Recurse -Force "$($vulkanLib.Directory.FullName)\*" "C:\VulkanSDK\Lib\" -ErrorAction SilentlyContinue
           }
           if ($glslcBin) {
-            $srcBin = $glslcBin.Directory.FullName
-            Copy-Item -Recurse -Force "$srcBin\*" "C:\VulkanSDK\Bin\"
+            New-Item -ItemType Directory -Force -Path "C:\VulkanSDK\Bin" | Out-Null
+            Copy-Item -Recurse -Force "$($glslcBin.Directory.FullName)\*" "C:\VulkanSDK\Bin\" -ErrorAction SilentlyContinue
+          }
+          
+          $spirvDir = "C:\VulkanSDK"
+          if ($spirvHeaderCmake) {
+            $spirvDir = $spirvHeaderCmake.Directory.FullName
+            New-Item -ItemType Directory -Force -Path "C:\VulkanSDK\share\cmake\SPIRV-Headers" | Out-Null
+            Copy-Item -Recurse -Force "$spirvDir\*" "C:\VulkanSDK\share\cmake\SPIRV-Headers\" -ErrorAction SilentlyContinue
+            Write-Host "Found SPIRV-Headers at: $spirvDir"
           }
           
           Remove-Item -Recurse -Force "C:\VulkanSDK_raw" -ErrorAction SilentlyContinue
@@ -79,10 +86,12 @@ jobs:
           Get-ChildItem "C:\VulkanSDK" | Format-Table
           
           echo "VULKAN_SDK=C:\VulkanSDK" >> $env:GITHUB_ENV
-          echo "CMAKE_PREFIX_PATH=C:\VulkanSDK" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=C:\VulkanSDK;$spirvDir" >> $env:GITHUB_ENV
           echo "Vulkan_INCLUDE_DIR=C:\VulkanSDK\Include" >> $env:GITHUB_ENV
           echo "Vulkan_LIBRARY=C:\VulkanSDK\Lib\vulkan-1.lib" >> $env:GITHUB_ENV
           echo "Vulkan_GLSLC_EXECUTABLE=C:\VulkanSDK\Bin\glslc.exe" >> $env:GITHUB_ENV
+          echo "SPIRV-Headers_DIR=$spirvDir" >> $env:GITHUB_ENV
+          echo "SPIRV_HEADERS_DIR=$spirvDir" >> $env:GITHUB_ENV
           echo "C:\VulkanSDK\Bin" >> $env:GITHUB_PATH
 
       - name: Setup CUDA Toolkit
@@ -136,7 +145,9 @@ jobs:
             -DCMAKE_PREFIX_PATH="%CMAKE_PREFIX_PATH%" ^
             -DVulkan_INCLUDE_DIR="%Vulkan_INCLUDE_DIR%" ^
             -DVulkan_LIBRARY="%Vulkan_LIBRARY%" ^
-            -DVulkan_GLSLC_EXECUTABLE="%Vulkan_GLSLC_EXECUTABLE%"
+            -DVulkan_GLSLC_EXECUTABLE="%Vulkan_GLSLC_EXECUTABLE%" ^
+            -DSPIRV-Headers_DIR="%SPIRV-Headers_DIR%" ^
+            -DSPIRV_HEADERS_DIR="%SPIRV_HEADERS_DIR%"
           cmake --build build-vulkan --config Release -j 4
 
       - name: Build CUDA Binaries
