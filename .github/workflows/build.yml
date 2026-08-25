@@ -43,45 +43,47 @@ jobs:
           Write-Host "Downloading Vulkan SDK $ver via curl.exe (High Speed)..."
           curl.exe -sSL -f -o $installer $url
           
-          Write-Host "Extracting Vulkan SDK via 7z (Takes ~5 seconds)..."
-          New-Item -ItemType Directory -Force -Path "C:\VulkanSDK" | Out-Null
-          7z x $installer -oC:\VulkanSDK -y -bso0 -bsp0
+          Write-Host "Extracting Vulkan SDK and nested packages via 7z..."
+          New-Item -ItemType Directory -Force -Path "C:\VulkanSDK_raw" | Out-Null
+          7z x $installer -oC:\VulkanSDK_raw -y -bso0 -bsp0
           if (Test-Path $installer) { Remove-Item -Force $installer }
           
-          # 精准定位 Include、Lib、Bin
-          $vulkanHeader = Get-ChildItem -Path "C:\VulkanSDK" -Recurse -Filter "vulkan.h" -ErrorAction SilentlyContinue | Select-Object -First 1
-          $vulkanLib = Get-ChildItem -Path "C:\VulkanSDK" -Recurse -Filter "vulkan-1.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-          $glslcBin = Get-ChildItem -Path "C:\VulkanSDK" -Recurse -Filter "glslc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          # 解压所有嵌套的 .7z / .zip 归档 (LunarG 安装包内部组件打包形式)
+          Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Include *.7z, *.zip | ForEach-Object {
+            7z x $_.FullName -o"$($_.Directory.FullName)" -y -bso0 -bsp0
+          }
+          
+          # 组装标准 Vulkan SDK 目录结构 (Include, Lib, Bin)
+          New-Item -ItemType Directory -Force -Path "C:\VulkanSDK\Include", "C:\VulkanSDK\Lib", "C:\VulkanSDK\Bin" | Out-Null
+          
+          $vulkanHeader = Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Filter "vulkan.h" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $vulkanLib = Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Filter "vulkan-1.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $glslcBin = Get-ChildItem -Path "C:\VulkanSDK_raw" -Recurse -Filter "glslc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           
           if ($vulkanHeader) {
-            $incDir = $vulkanHeader.Directory.Parent.FullName
-            $sdkRoot = (Get-Item $incDir).Parent.FullName
-            echo "Vulkan_INCLUDE_DIR=$incDir" >> $env:GITHUB_ENV
-            echo "Vulkan_INCLUDE_DIRS=$incDir" >> $env:GITHUB_ENV
-          } else {
-            $sdkRoot = "C:\VulkanSDK"
+            $srcInc = $vulkanHeader.Directory.Parent.FullName
+            Copy-Item -Recurse -Force "$srcInc\*" "C:\VulkanSDK\Include\"
           }
-          
           if ($vulkanLib) {
-            $libPath = $vulkanLib.FullName
-            echo "Vulkan_LIBRARY=$libPath" >> $env:GITHUB_ENV
-            echo "Vulkan_LIBRARIES=$libPath" >> $env:GITHUB_ENV
+            $srcLib = $vulkanLib.Directory.FullName
+            Copy-Item -Recurse -Force "$srcLib\*" "C:\VulkanSDK\Lib\"
           }
-          
           if ($glslcBin) {
-            $glslcPath = $glslcBin.FullName
-            $binDir = $glslcBin.Directory.FullName
-            echo "Vulkan_GLSLC_EXECUTABLE=$glslcPath" >> $env:GITHUB_ENV
-            echo "$binDir" >> $env:GITHUB_PATH
+            $srcBin = $glslcBin.Directory.FullName
+            Copy-Item -Recurse -Force "$srcBin\*" "C:\VulkanSDK\Bin\"
           }
           
-          Write-Host "Vulkan SDK Root: $sdkRoot"
-          Write-Host "Vulkan Header: $($vulkanHeader.FullName)"
-          Write-Host "Vulkan Lib: $($vulkanLib.FullName)"
-          Write-Host "Vulkan Glslc: $($glslcBin.FullName)"
+          Remove-Item -Recurse -Force "C:\VulkanSDK_raw" -ErrorAction SilentlyContinue
           
-          echo "VULKAN_SDK=$sdkRoot" >> $env:GITHUB_ENV
-          echo "CMAKE_PREFIX_PATH=$sdkRoot" >> $env:GITHUB_ENV
+          Write-Host "================ [ VULKAN SDK READY ] ================"
+          Get-ChildItem "C:\VulkanSDK" | Format-Table
+          
+          echo "VULKAN_SDK=C:\VulkanSDK" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=C:\VulkanSDK" >> $env:GITHUB_ENV
+          echo "Vulkan_INCLUDE_DIR=C:\VulkanSDK\Include" >> $env:GITHUB_ENV
+          echo "Vulkan_LIBRARY=C:\VulkanSDK\Lib\vulkan-1.lib" >> $env:GITHUB_ENV
+          echo "Vulkan_GLSLC_EXECUTABLE=C:\VulkanSDK\Bin\glslc.exe" >> $env:GITHUB_ENV
+          echo "C:\VulkanSDK\Bin" >> $env:GITHUB_PATH
 
       - name: Setup CUDA Toolkit
         uses: Jimver/cuda-toolkit@v0.2.21
