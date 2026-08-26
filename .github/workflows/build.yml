@@ -3,6 +3,20 @@ name: Build SD.cpp Prebuilt
 on:
   workflow_dispatch:
     inputs:
+      platform:
+        description: 'Target Platform / 编译目标平台'
+        required: true
+        default: 'linux'
+        type: choice
+        options:
+          - 'linux'
+          - 'windows'
+          - 'macos'
+          - 'all'
+      release_tag:
+        description: 'Release Tag (可选：填入版本号如 v0.1.0 将自动发布/追加到该 Release，留空则仅生成临时 Artifacts)'
+        required: false
+        default: ''
       commit_id:
         description: 'Git Commit ID 或分支/Tag (默认锁定本地稳定 Commit)'
         required: false
@@ -12,8 +26,159 @@ on:
       - 'v*'
 
 jobs:
+  # ══════════════════════════════════════════════════════════
+  #  1. Linux (x86_64, Ubuntu 20.04 Container) — Vulkan + CUDA 12.8
+  # ══════════════════════════════════════════════════════════
+  build-linux:
+    name: Linux x86_64 (Ubuntu 20.04, Vulkan + CUDA 12.8)
+    if: github.event_name == 'push' || github.event.inputs.platform == 'linux' || github.event.inputs.platform == 'all'
+    runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:20.04
+      options: --privileged
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Print Linux Hardware & System Diagnostic Info
+        run: |
+          echo "================================================================================"
+          echo "🖥️  [Linux 构建机系统与硬件环境诊断]"
+          echo "--------------------------------------------------------------------------------"
+          echo "📌 操作系统: $(uname -s -r -m)"
+          [ -f /etc/os-release ] && grep -E '^(PRETTY_NAME|NAME|VERSION)=' /etc/os-release || true
+          echo "🧠 CPU 处理器: $(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo 'N/A') [逻辑核心数: $(nproc 2>/dev/null || echo 1)]"
+          echo "💾 物理内存: $(free -h 2>/dev/null | awk '/^Mem:/{print "总计: "$2", 已用: "$3", 可用: "$7}' || echo 'N/A')"
+          echo "💽 磁盘空间列表:"
+          df -h -x tmpfs -x devtmpfs -x overlay 2>/dev/null || df -h
+          echo "================================================================================"
+
+      - name: Install System Base Tools & Modern GCC 11
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            software-properties-common curl wget git pkg-config ccache \
+            libasound2-dev tar gzip xz-utils ca-certificates gnupg build-essential ninja-build
+          echo "deb [trusted=yes] http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu focal main" | tee /etc/apt/sources.list.d/ubuntu-toolchain-r-test.list
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-11 g++-11
+
+      - name: Setup Portable CMake (3.28.6)
+        run: |
+          mkdir -p /tmp/cmake
+          curl -sSL "https://github.com/Kitware/CMake/releases/download/v3.28.6/cmake-3.28.6-linux-x86_64.tar.gz" \
+            | tar -xz -C /tmp/cmake --strip-components=1
+          echo "/tmp/cmake/bin" >> $GITHUB_PATH
+
+      - name: Setup Vulkan SDK (1.3.290.0)
+        run: |
+          mkdir -p /tmp/vulkansdk
+          curl -sSL "https://sdk.lunarg.com/sdk/download/1.3.290.0/linux/vulkansdk-linux-x86_64-1.3.290.0.tar.xz" \
+            | tar -xJ -C /tmp/vulkansdk --strip-components=1
+          echo "VULKAN_SDK=/tmp/vulkansdk/x86_64" >> $GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=/tmp/vulkansdk/x86_64" >> $GITHUB_ENV
+          echo "/tmp/vulkansdk/x86_64/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=/tmp/vulkansdk/x86_64/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+
+      - name: Setup NVIDIA CUDA Toolkit (12.8.x)
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb
+          dpkg -i /tmp/cuda-keyring.deb && rm -f /tmp/cuda-keyring.deb
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            cuda-nvcc-12-8 cuda-cudart-dev-12-8 libcublas-dev-12-8 libcurand-dev-12-8 cuda-cccl-12-8
+          echo "CUDA_PATH=/usr/local/cuda-12.8" >> $GITHUB_ENV
+          echo "/usr/local/cuda-12.8/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.commit_id || 'db99efdd6d2a43c7937fd55b3359206c680a75b0' }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build Vulkan & CPU Binaries
+        run: |
+          export CC=gcc-11
+          export CXX=g++-11
+          cmake -B build-vulkan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DSD_BUILD_SHARED_LIBS=ON \
+            -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=OFF \
+            -DSD_BUILD_EXAMPLES=OFF \
+            -DSD_SERVER_BUILD_FRONTEND=OFF \
+            -DSD_WEBP=OFF \
+            -DSD_WEBM=OFF \
+            -DSD_VULKAN=ON \
+            -DVULKAN_SDK=$VULKAN_SDK \
+            -DCMAKE_PREFIX_PATH="$VULKAN_SDK;$VULKAN_SDK/share/cmake"
+          cmake --build build-vulkan --config Release -j $(nproc)
+
+      - name: Build CUDA Binaries
+        run: |
+          export CC=gcc-11
+          export CXX=g++-11
+          export CUDAHOSTCXX=g++-11
+          cmake -B build-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_CUDA_HOST_COMPILER=g++-11 \
+            -DSD_BUILD_SHARED_LIBS=ON \
+            -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=OFF \
+            -DSD_BUILD_EXAMPLES=OFF \
+            -DSD_SERVER_BUILD_FRONTEND=OFF \
+            -DSD_WEBP=OFF \
+            -DSD_WEBM=OFF \
+            -DSD_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;100;120;120-virtual"
+          cmake --build build-cuda --config Release -j $(nproc)
+
+      - name: Organize Output Artifacts (Linux)
+        run: |
+          mkdir -p dist/sdcpp/engines dist/sdcpp/ggml
+
+          # 收集 Vulkan/CPU 主引擎与 ggml
+          find build-vulkan/ -type f \( -name "*.so*" \) | while read file; do
+            filename=$(basename "$file")
+            if [[ "$filename" == *"ggml"* ]]; then
+              cp -fP "$file" dist/sdcpp/ggml/
+            elif [[ "$filename" == *"stable-diffusion"* || "$filename" == *"sd."* ]]; then
+              cp -fP "$file" dist/sdcpp/engines/
+            fi
+          done
+
+          # 收集 CUDA 插件 (ggml-cuda)
+          find build-cuda/ -type f \( -name "*cuda*.so*" \) | while read file; do
+            cp -fP "$file" dist/sdcpp/ggml/
+          done
+
+          # 打包
+          cd dist
+          tar -czf ../sdcpp-linux-x86_64.tar.gz sdcpp
+          cd ..
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdcpp-linux-x86_64
+          path: sdcpp-linux-x86_64.tar.gz
+
+  # ══════════════════════════════════════════════════════════
+  #  2. Windows (x86_64-pc-windows-msvc) — Vulkan + CUDA 12.8
+  # ══════════════════════════════════════════════════════════
   build-windows:
     name: Windows x86_64 (Vulkan + CUDA)
+    if: github.event_name == 'push' || github.event.inputs.platform == 'windows' || github.event.inputs.platform == 'all'
     runs-on: windows-2022
     env:
       CUDAFLAGS: "--allow-unsupported-compiler"
@@ -160,10 +325,93 @@ jobs:
           name: sdcpp-windows-x86_64
           path: sdcpp-windows-x86_64.tar.gz
 
+  # ══════════════════════════════════════════════════════════
+  #  3. Apple macOS (ARM64 / Apple Silicon) — Metal 加速
+  # ══════════════════════════════════════════════════════════
+  build-macos:
+    name: macOS ARM64 (Apple Silicon Metal)
+    if: github.event_name == 'push' || github.event.inputs.platform == 'macos' || github.event.inputs.platform == 'all'
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.commit_id || 'db99efdd6d2a43c7937fd55b3359206c680a75b0' }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Ninja
+        run: |
+          brew install ninja
+          ninja --version
+
+      - name: Print System & Hardware Specs
+        run: |
+          echo "================ [ OS & SYSTEM INFO ] ================"
+          sw_vers
+          uname -a
+          echo "================ [ CPU INFO ] ================"
+          sysctl -n machdep.cpu.brand_string || true
+          sysctl hw.ncpu hw.physicalcpu
+          echo "================ [ MEMORY & DISK INFO ] ================"
+          sysctl hw.memsize
+          df -h
+          echo "================ [ TOOLCHAIN INFO ] ================"
+          cmake --version | head -n1
+          ninja --version
+          clang --version | head -n1
+          echo "======================================================"
+
+      - name: Build Metal Binaries
+        run: |
+          cmake -B build-metal -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSD_BUILD_SHARED_LIBS=ON \
+            -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=OFF \
+            -DSD_BUILD_EXAMPLES=OFF \
+            -DSD_SERVER_BUILD_FRONTEND=OFF \
+            -DSD_WEBP=OFF \
+            -DSD_WEBM=OFF \
+            -DSD_METAL=ON \
+            -DCMAKE_OSX_ARCHITECTURES="arm64"
+          cmake --build build-metal --config Release -j $(sysctl -n hw.ncpu)
+
+      - name: Organize Output Artifacts (macOS ARM64 Metal)
+        run: |
+          mkdir -p dist/sdcpp/engines dist/sdcpp/ggml
+
+          # 收集 dylib 和 metal 资源
+          find build-metal/ -type f \( -name "*.dylib*" -o -name "*.metal" -o -name "*.metallib" \) | while read file; do
+            filename=$(basename "$file")
+            if [[ "$filename" == *"ggml"* || "$filename" == *"metal"* ]]; then
+              cp -fP "$file" dist/sdcpp/ggml/
+            elif [[ "$filename" == *"stable-diffusion"* || "$filename" == *"sd."* ]]; then
+              cp -fP "$file" dist/sdcpp/engines/
+            fi
+          done
+
+          # 打包
+          cd dist
+          tar -czf ../sdcpp-macos-arm64.tar.gz sdcpp
+          cd ..
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdcpp-macos-arm64
+          path: sdcpp-macos-arm64.tar.gz
+
+  # ══════════════════════════════════════════════════════════
+  #  4. GitHub Release 自动发布 (打 Tag 时自动合并发布全平台产物)
+  # ══════════════════════════════════════════════════════════
   release:
-    name: Create GitHub Release
-    needs: [build-windows]
-    if: startsWith(github.ref, 'refs/tags/')
+    name: Create or Update GitHub Release
+    needs: [build-linux, build-windows, build-macos]
+    if: (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')) && !cancelled() && !contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -174,6 +422,23 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          name: "SD.cpp Prebuilt ${{ github.event.inputs.release_tag || github.ref_name }}"
+          body: |
+            ## 📦 Stable Diffusion C++ Prebuilt Binaries (${{ github.event.inputs.release_tag || github.ref_name }})
+
+            ### 📌 Commit & Version Info
+            - **Upstream Commit SHA**: `${{ github.sha }}`
+            - **Release Tag**: `${{ github.event.inputs.release_tag || github.ref_name }}`
+            - **Included Engines**: `libstable-diffusion`, `ggml`, `ggml-cpu`, `ggml-vulkan`, `ggml-cuda` / `ggml-metal`
+
+            ### 🚀 Prebuilt Packages
+            | Platform | Archive File | Acceleration Support |
+            |---|---|---|
+            | 🐧 Linux (x86_64, glibc 2.31+) | `sdcpp-linux-x86_64.tar.gz` | CUDA 12.8.x + Vulkan |
+            | 🪟 Windows (x86_64) | `sdcpp-windows-x86_64.tar.gz` | CUDA 12.8 + Vulkan |
+            | 🍏 macOS (ARM64) | `sdcpp-macos-arm64.tar.gz` | Apple Metal |
           files: artifacts/**/*
+          overwrite: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
